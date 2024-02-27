@@ -8,11 +8,11 @@ exports.updateOrAddCard = async (req, res, next) => {
     await manageGroupData(insertedData, groupData, req.userId);
 
     insertedNoteIds = [];
-    var card = groupData["cards"];
-    for (let i = 0; i < card.length; i++) {
-      await manageGroupCardData(card[i], groupData);
+    var cards = groupData["cards"];
+    for (let i = 0; i < cards.length; i++) {
+      await manageGroupCardData(cards[i], groupData);
       if (groupData["groupName"] == "All") {
-        await manageNotesData(card[i], req.userId, insertedNoteIds);
+        await manageNotesData(cards[i], req.userId, insertedNoteIds);
       }
     }
     let lastIndex = insertedData.length - 1;
@@ -27,7 +27,7 @@ exports.updateOrAddCard = async (req, res, next) => {
   //     group: "All",
   //     isVisible: 1,
   //     card: [
-  //       { id: 1, notes: [{ id: 1, title: "", text: "", dateTime: "", isUpdated : 0,isdeleted:0 }],isLinkUpdated:0,isLinkDeleted:0,isDeleted:0 },
+  //       { id: 1, notes: [{ id: 1, title: "", text: "", dateTime: "", isUpdated : 0,isdeleted:0 }],isDeleted:0 },
   //       { id: 2, notes: { title: "", text: "", dateTime: "" } },
   //       { id: 3, notes: { title: "", text: "", dateTime: "" } },
   //       { id: 4, notes: { title: "", text: "", dateTime: "" } },
@@ -152,7 +152,7 @@ async function manageNotesData(card, userId, insertedNoteIds) {
 async function manageGroupData(insertedData, groupData, userId) {
   if (groupData["id"] == null) {
     let [result] = await db.execute(
-      "Insert into groupData (name,userId,isVisible) Values (?,?,?)",
+      "Insert into groupdata (name,userId,isVisible) Values (?,?,?)",
       [groupData["groupName"], userId, groupData["isVisible"]]
     );
 
@@ -161,13 +161,13 @@ async function manageGroupData(insertedData, groupData, userId) {
       cards: [],
     });
   } else if (groupData["isDeleted"]) {
-    await db.execute("Delete from groupData where userId = ? And id = ?", [
+    await db.execute("Delete from groupdata where userId = ? And id = ?", [
       userId,
       groupData["id"],
     ]);
   } else if (groupData["isUpdated"]) {
     await db.execute(
-      "Update groupData set name = ?,isVisible = ? where id = ? And userId = ?",
+      "Update groupdata set name = ?,isVisible = ? where id = ? And userId = ?",
       [groupData["groupName"], groupData["isVisible"], groupData["id"], userId]
     );
   }
