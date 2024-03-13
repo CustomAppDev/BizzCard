@@ -3,6 +3,8 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const nodemailer = require("nodemailer");
 const { google } = require("googleapis");
+const crypto = require("crypto");
+const { deleteSpecificUserImage, deleteAllUserImages } = require("../s3");
 
 var loggedInUsers = [];
 
@@ -46,10 +48,35 @@ exports.removeAccount = async (req, res, next) => {
   let [[user]] = await db.execute("Select * from users where id = ?", [
     req.userId,
   ]);
-
   var isEqual = await bcrypt.compare(password, user.password);
   if (isEqual) {
+    let [groupIds] = await db.execute(
+      "Select id from groupdata where userId = ?",
+      [req.userId]
+    );
+    await db.execute("Delete from groupdata where userId = ?", [req.userId]);
+    for (var i = 0; i < groupIds.length; i++) {
+      await db.execute("Delete from groupcarddata where groupId = ?", [
+        groupIds[i]["id"],
+      ]);
+    }
+
+    deleteAllUserImages(req.userId);
     await db.execute("Delete from users where id = ?", [req.userId]);
+    var [cardIds] = await db.execute(
+      "Select id from carddata where userId = ?",
+      [req.userId]
+    );
+
+    await db.execute("Delete from carddata where userId = ?", [req.userId]);
+    for (var i = 0; i < cardIds.length; i++) {
+      await db.execute("Delete from phone where cardDataId = ?", [
+        cardIds[i]["id"],
+      ]);
+      await db.execute("Delete from notes where cardDataId = ?", [
+        cardIds[i]["id"],
+      ]);
+    }
 
     for (var i = 0; i < loggedInUsers.length; i++) {
       if (req.userId == loggedInUsers[i].id) {
@@ -125,16 +152,49 @@ exports.getUserData = async (req, res, next) => {
   }
 };
 
-function getFilePath(files, fieldName, index) {
-  if (
-    files != null &&
-    fieldName in files &&
-    files[fieldName][index] != null &&
-    "key" in files[fieldName][index]
-  ) {
+function getFilePath(files, fieldName, index, cd) {
+  if (fieldName in cd) {
+    return cd[fieldName];
+  } else {
     return files[fieldName][index]["key"];
   }
-  return null;
+}
+
+function deleteImage(previousImage, imagePath, userId) {
+  if (previousImage !== null && imagePath !== null) {
+    if (previousImage !== imagePath) {
+      deleteSpecificUserImage(previousImage, userId);
+      deleteSpecificUserImage(imagePath, userId);
+    } else {
+      deleteSpecificUserImage(imagePath, userId);
+    }
+  } else if (previousImage !== null) {
+    deleteSpecificUserImage(previousImage, userId);
+  } else if (imagePath !== null) {
+    deleteSpecificUserImage(imagePath, userId);
+  }
+}
+
+function deleteImageIfNotFound(previousImage, imagePath, userId) {
+  if (previousImage !== null && previousImage !== imagePath) {
+    deleteSpecificUserImage(previousImage, userId);
+  }
+}
+async function setImagesForDeletion(
+  imagePath,
+  cardFrontPath,
+  cardBackPath,
+  imageDelete,
+  userId,
+  id
+) {
+  var previousImage = await db.execute(
+    "Select image,cardFront,cardback from carddata where userId = ? And id = ?",
+    [userId, id]
+  );
+  imageDelete(previousImage["image"], imagePath, userId);
+  imageDelete(previousImage["cardFront"], cardFrontPath, userId);
+  imageDelete(previousImage["cardback"], cardBackPath, userId);
 }
 
 exports.saveData = async (req, res, next) => {
@@ -142,9 +202,9 @@ exports.saveData = async (req, res, next) => {
   var data = JSON.parse(req.body["data"]);
   for (let i = 0; i < data.length; i++) {
     var cd = data[i];
-    var imagePath = getFilePath(req.files, "image", i);
-    var cardFrontPath = getFilePath(req.files, "cardFront", i);
-    var cardBackPath = getFilePath(req.files, "cardBack", i);
+    var imagePath = getFilePath(req.files, "image", i, cd);
+    var cardFrontPath = getFilePath(req.files, "cardFront", i, cd);
+    var cardBackPath = getFilePath(req.files, "cardBack", i, cd);
     if (cd["id"] == null) {
       let [result] = await db.execute(
         "Insert into carddata (name,email,image,cardFront,cardBack,companyName,address,companyWebsite,designation,department,stateName,cityName,countryName,isBorderRadiusApplied,userId) Values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -198,12 +258,31 @@ exports.saveData = async (req, res, next) => {
         insertedData[i]["notesId"].push(notesResult.insertId);
       }
     } else if (cd["isDeleted"]) {
+      setImagesForDeletion(
+        imagePath,
+        cardFrontPath,
+        cardBackPath,
+        deleteImage,
+        req.userId,
+        cd["id"]
+      );
+
       await db.execute("Delete from carddata where userId = ? And id = ?", [
         req.userId,
         cd["id"],
       ]);
-      //delete other link tables as well
+      await db.execute("Delete from phone where cardDataId = ?", [cd["id"]]);
+      await db.execute("Delete from notes where cardDataId = ?", [cd["id"]]);
     } else if (cd["isUpdated"]) {
+      setImagesForDeletion(
+        imagePath,
+        cardFrontPath,
+        cardBackPath,
+        deleteImageIfNotFound,
+        req.userId,
+        cd["id"]
+      );
+
       await db.execute(
         "Update carddata set name = ?,email = ?,image = ?,cardFront = ?,cardback = ?,companyName = ?,address = ?,companyWebsite = ?,designation = ?,department = ?,stateName = ?,cityName = ?,countryName = ?,isBorderRadiusApplied = ? where userId = ? And id = ?",
         [
@@ -266,20 +345,13 @@ exports.saveData = async (req, res, next) => {
           insertedData[lastIndex][notesId].push(notesResult.insertId);
         } else if (val["isUpdated"]) {
           await db.execute(
-            "Update notes set title = ?,text = ?,dateTime = ? where cardDataId = ? And userId = ? And id = ?",
-            [
-              val["title"],
-              val["text"],
-              val["dateTime"],
-              cd["id"],
-              req.userId,
-              val["id"],
-            ]
+            "Update notes set title = ?,text = ?,dateTime = ? where cardDataId = ? And id = ?",
+            [val["title"], val["text"], val["dateTime"], cd["id"], val["id"]]
           );
         } else if (val["isDeleted"]) {
           await db.execute(
-            "Delete from notes where cardDataId = ? And userId = ? And id = ?",
-            [cd["id"], req.userId, val["id"]]
+            "Delete from notes where cardDataId = ? And id = ?",
+            [cd["id"], val["id"]]
           );
         }
       }
@@ -330,9 +402,22 @@ exports.changePassword = (req, res, next) => {
     });
 };
 
+function generateOTP(length) {
+  const chars = "0123456789";
+  const charsLength = chars.length;
+  let otp = "";
+
+  for (let i = 0; i < length; i++) {
+    const randomIndex = crypto.randomInt(0, charsLength);
+    otp += chars[randomIndex];
+  }
+
+  return otp;
+}
+
 exports.generateValidationCode = (req, res, next) => {
   const email = req.body.email;
-  let r = Math.random().toString(36).substring(0, 6);
+  const otp = generateOTP(6);
   loadAccessToken()
     .then((data) => {
       transporter.sendMail(
@@ -340,7 +425,7 @@ exports.generateValidationCode = (req, res, next) => {
           from: process.env.emailVal, // TODO: email sender
           to: email, // TODO: email receiver
           subject: "Signup Validation!",
-          text: "Business Card App validation code is " + r,
+          text: `Business Card App validation code is ${otp}`,
         },
         (err, data) => {
           if (err) {
@@ -352,7 +437,7 @@ exports.generateValidationCode = (req, res, next) => {
             });
           } else {
             res.status(200).json({
-              validation: r,
+              validation: otp,
               message: "Validation code sent",
             });
             console.log("Email sent!!!");
@@ -365,12 +450,10 @@ exports.generateValidationCode = (req, res, next) => {
     });
 };
 
-exports.checkIfEmailAlreadyExists = (req, res, next) => {
-  const email = req.body.email;
-
-  db.execute("SELECT * FROM users where email = ?", [email])
+function userExists(fieldName, value, res) {
+  db.execute("SELECT * FROM users where " + fieldName + " = ?", [value])
     .then(([[user]]) => {
-      if (user != null && user["password"] != null) {
+      if (user != null) {
         res.status(200).json({
           exists: true,
         });
@@ -383,11 +466,20 @@ exports.checkIfEmailAlreadyExists = (req, res, next) => {
     .catch((err) => {
       console.log(err);
     });
+}
+
+exports.checkIfEmailAlreadyExists = (req, res, next) => {
+  userExists("email", req.body.email, res);
+};
+
+exports.checkIfSameDevice = (req, res, next) => {
+  userExists("deviceId", req.body.deviceId, res);
 };
 
 exports.registerUser = async (req, res, next) => {
   const email = req.body.email;
   const password = req.body.password;
+  const deviceId = req.body.deviceId;
 
   //because date time is not stored correctly in database
   var currentDate = new Date(
@@ -396,13 +488,11 @@ exports.registerUser = async (req, res, next) => {
 
   let hashedPw = await bcrypt.hash(password, 12);
   if (hashedPw != null) {
-    let [[user]] = await db.execute("SELECT * FROM users where email = ?", [
-      email,
-    ]);
+    [[user]] = await db.execute("SELECT * FROM users where email = ?", [email]);
     if (user == null) {
       let [result] = await db.execute(
-        "Insert into users (email,password,createdAt,last_login) Values (?,?,?,?)",
-        [email, hashedPw, currentDate, currentDate]
+        "Insert into users (email,password,deviceId,createdAt,last_login) Values (?,?,?,?,?)",
+        [email, hashedPw, deviceId, currentDate, currentDate]
       );
       if (result != null) {
         loggedInUsers.push({
@@ -424,14 +514,12 @@ exports.registerUser = async (req, res, next) => {
           id: result.insertId,
         });
       }
+    } else {
+      res.status(200).json({
+        message: "Account with the same email is already added !!",
+      });
     }
   }
-};
-
-exports.checkIsAuth = (req, res, next) => {
-  res.status(200).json({
-    message: "User is authenticated !!",
-  });
 };
 
 exports.login = async (req, res, next) => {

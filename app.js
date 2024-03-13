@@ -1,11 +1,10 @@
 const express = require("express");
 const bodyParser = require("body-parser");
-const path = require("path");
 
 const authRoutes = require("./routes/authRoutes");
 const cardRoutes = require("./routes/cardRoutes");
+const { getFileStream } = require("./s3");
 const app = express();
-app.use("/images",express.static(path.join(__dirname, "images")));
 
 app.use(
   bodyParser.urlencoded({
@@ -24,8 +23,17 @@ app.use((req, res, next) => {
   next();
 });
 
+
 app.use("/auth", authRoutes);
 app.use("/card", cardRoutes);
+
+
+app.get("/:id/:key", (req, res, next) => {
+  var id = req.params.id;
+  var fileName = req.params.key;
+  var readStream = getFileStream(id, fileName);
+  readStream.pipe(res);
+});
 
 app.use("/", (req, res, next) => {
   res.json({

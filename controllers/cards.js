@@ -106,7 +106,7 @@ async function manageGroupCardData(card, groupData) {
       `,
       [groupData["id"], card["id"]]
     );
-    if (!result)
+    if (result.length == 0)
       await db.execute(
         `
           INSERT INTO groupcarddata
@@ -155,7 +155,7 @@ async function manageGroupData(insertedData, groupData, userId) {
       "Insert into groupdata (name,userId,isVisible) Values (?,?,?)",
       [groupData["groupName"], userId, groupData["isVisible"]]
     );
-
+    groupData["id"] = result.insertId;
     insertedData.push({
       groupId: result.insertId,
       cards: [],
